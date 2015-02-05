@@ -1,6 +1,8 @@
 ﻿using System;
 using System.IO;
 using System.IO.Pipes;
+using System.Text;
+using System.Threading.Tasks;
 
 namespace ConsolePipeReader
 {
@@ -14,19 +16,86 @@ namespace ConsolePipeReader
         {
             Console.WriteLine("Welcome to Pipe Reader.");
 
+            createPipeServer();
+
             while (true)
             {
                 askForPipeNameAndStart();
             }
         }
 
+        private static void createPipeServer()
+        {
+            Console.WriteLine("");
+            Console.WriteLine("Enter name of the host pipe:");
+            string pipeName = Console.ReadLine();
+
+            if (String.IsNullOrEmpty(pipeName))
+            {
+                return;
+            }
+
+            Console.WriteLine("Creating " + pipeName + "...");
+
+            Parallel.Invoke(() => runServer(pipeName));
+        }
+
+        private static object runServer(string pipeName)
+        {
+            int BufferSize = 256;
+            Decoder decoder = Encoding.Default.GetDecoder();
+            Byte[] bytes = new Byte[BufferSize];
+            char[] chars = new char[BufferSize];
+            int numBytes = 0;
+            StringBuilder msg = new StringBuilder();
+
+            try
+            {
+                using (NamedPipeServerStream pipeServer = new NamedPipeServerStream(pipeName, PipeDirection.In, 1, PipeTransmissionMode.Message, PipeOptions.Asynchronous))
+                {
+                    while (true)
+                    {
+                        pipeServer.WaitForConnection();
+
+                        do
+                        {
+                            msg.Length = 0;
+                            do
+                            {
+                                numBytes = pipeServer.Read(bytes, 0, BufferSize);
+                                if (numBytes > 0)
+                                {
+                                    int numChars = decoder.GetCharCount(bytes, 0, numBytes);
+                                    decoder.GetChars(bytes, 0, numBytes, chars, 0, false);
+                                    msg.Append(chars, 0, numChars);
+                                }
+                            } while (numBytes > 0 && !pipeServer.IsMessageComplete);
+
+                            decoder.Reset();
+
+                            if (numBytes > 0)
+                            {
+                                Console.Write(msg);
+                            }
+                        } while (numBytes != 0);
+
+                        pipeServer.Disconnect();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine("Server Error:");
+                Console.WriteLine(ex);
+            }
+            return null;
+        }
+
+
         private static void askForPipeNameAndStart()
         {
-            // Tracks whether the connection has started, used in exception handling.
-            bool activeConnection = false;
-
             Console.WriteLine("");
-            Console.WriteLine("Enter name of the pipe to listen to:");
+            Console.WriteLine("Enter name of the client pipe:");
             string pipeName = Console.ReadLine();
 
             if (String.IsNullOrEmpty(pipeName))
@@ -36,49 +105,94 @@ namespace ConsolePipeReader
 
             Console.WriteLine("Connecting to " + pipeName + "...");
 
-            try
+            using (NamedPipeClientStream pipeClient = new NamedPipeClientStream(".", pipeName, PipeDirection.Out, PipeOptions.Asynchronous))
             {
-                using (PipeStream pipeStream = new AnonymousPipeClientStream(PipeDirection.In, pipeName))
+                try
                 {
-                    var checkMe = pipeStream.TransmissionMode;
-
-                    using (StreamReader reader = new StreamReader(pipeStream))
-                    {
-                        string receivedMessage;
-
-                        // Wait until we receive "SYNC"
-                        do
-                        {
-                            Console.WriteLine("Waiting for the other party...");
-                            receivedMessage = reader.ReadLine();
-                        }
-                        while (receivedMessage != "SYNC");
-
-                        activeConnection = true;
-                        Console.WriteLine("Established connection.");
-                        Console.WriteLine("--------------------------------------------------------------");
-
-                        // Display messages until we receive "STOP"
-                        while ((receivedMessage = reader.ReadLine()) != "STOP")
-                        {
-                            Console.WriteLine(receivedMessage);
-                        }
-                        activeConnection = false;
-                        Console.WriteLine("--------------------------------------------------------------");
-                        Console.WriteLine("The other party stopped communication.");
-                        return;
-                    }
+                    pipeClient.Connect(2000);
                 }
-            }
-            catch (Exception ex)
-            {
-                // If we are receiving messages, draw a separator before printing local message.
-                if (activeConnection)
+                catch
                 {
-                    Console.WriteLine("--------------------------------------------------------------");
+                    Console.WriteLine("The Pipe server must be started in order to send data to it.");
+                    return;
                 }
-                Console.WriteLine("Error: " + ex.Message);
-            }
+                Console.WriteLine("Connected to pipe. Send messages.");
+                using (StreamWriter sw = new StreamWriter(pipeClient))
+                {
+                    sw.WriteLine(Console.ReadLine());
+                }
+            }   
         }
     }
 }
+
+/* Unsuccessful attempt at a server:
+
+        StreamWriter debugWriter;
+        NamedPipeServerStream pipeServer;
+        private void beginDebugConnection()
+        {
+            pipeServer = new NamedPipeServerStream("DebugPipe", PipeDirection.Out, 1);
+
+            try
+            {
+                // Read user input and send that to the client process. 
+                debugWriter = new StreamWriter(pipeServer);
+                debugWriter.AutoFlush = true;
+                // Send a 'sync message' and wait for client to receive it.
+                debugWriter.WriteLine("SYNC");
+                pipeServer.WaitForPipeDrain();
+            }
+            // Catch the IOException that is raised if the pipe is broken 
+            // or disconnected. 
+            catch (IOException e)
+            {
+                MessageObject errorMessage = new MessageObject(e.Message, CommunicationArguments.MessageKind.Error);
+                CommunicationHub.ShowUserMessage(errorMessage);
+            }
+        }
+
+        private void writeDebugMessage(string message)
+        {
+            try
+            {
+                if (debugWriter != null)
+                {
+                    debugWriter.WriteLine(message);
+                }
+            }
+            catch (IOException e)
+            {
+                MessageObject errorMessage = new MessageObject(e.Message, CommunicationArguments.MessageKind.Error);
+                CommunicationHub.ShowUserMessage(errorMessage);
+            }
+        }
+
+        private void closeDebugConnection()
+        {
+            try
+            {
+                if (debugWriter != null)
+                {
+                    debugWriter.WriteLine("STOP");
+                    debugWriter.Flush();
+                    debugWriter.Dispose();
+                    debugWriter.Close();
+                }
+                debugWriter = null;
+                if (pipeServer != null)
+                {
+                    pipeServer.Dispose();
+                    pipeServer.Close();
+                }
+                pipeServer = null;
+            }
+            catch (IOException e)
+            {
+                MessageObject errorMessage = new MessageObject(e.Message, CommunicationArguments.MessageKind.Error);
+                CommunicationHub.ShowUserMessage(errorMessage);
+            }
+        }
+
+
+    */
