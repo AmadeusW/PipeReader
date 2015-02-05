@@ -27,7 +27,7 @@ namespace ConsolePipeReader
         private static void createPipeServer()
         {
             Console.WriteLine("");
-            Console.WriteLine("Enter name of the host pipe:");
+            Console.WriteLine("Enter name of the host pipe, or hit enter to use a client:");
             string pipeName = Console.ReadLine();
 
             if (String.IsNullOrEmpty(pipeName))
