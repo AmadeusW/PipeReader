@@ -4,6 +4,7 @@ using System.IO;
 using System.IO.Pipes;
 using System.Threading.Tasks;
 using System.Threading;
+using System.Text;
 
 namespace PipeCommunication
 {
@@ -45,31 +46,52 @@ namespace PipeCommunication
         {
             using (NamedPipeClientStream pipeClient = new NamedPipeClientStream(".", _pipeName, PipeDirection.Out, PipeOptions.Asynchronous))
             {
-                try
+                while (!token.IsCancellationRequested)
                 {
-                    pipeClient.Connect(2000);
-                }
-                catch
-                {
-                    // The Pipe server must be started in order to send data to it.
-                    return;
-                }
-                // Connected to pipe. Send messages.
-                using (StreamWriter sw = new StreamWriter(pipeClient))
-                {
-                    while (!token.IsCancellationRequested)
+                    try
                     {
-                        lock (_access)
+                        if (!pipeClient.IsConnected)
                         {
-                            while (_messageQueue.Count == 0)
-                            {
-                                Monitor.Wait(_access);
-                            }
-                            sw.WriteLine(_messageQueue.Dequeue());
-                            Monitor.Pulse(_access);
+                            pipeClient.Connect(2000);
                         }
                     }
+                    catch (TimeoutException oEX)
+                    {
+                        // The Pipe server must be started in order to send data to it.
+                        return;
+                    }
+
+                    lock (_access)
+                    {
+                        while (_messageQueue.Count == 0)
+                        {
+                            Monitor.Wait(_access);
+                        }
+
+                        var sentString = _messageQueue.Dequeue();
+                        byte[] _buffer = Encoding.UTF8.GetBytes(sentString);
+                        pipeClient.BeginWrite(_buffer, 0, _buffer.Length, AsyncSend, pipeClient);
+
+                        Monitor.Pulse(_access);
+                    }
                 }
+            }
+        }
+
+        private void AsyncSend(IAsyncResult iar)
+        {
+            try
+            {
+                // Get the pipe
+                NamedPipeClientStream pipeStream = (NamedPipeClientStream)iar.AsyncState;
+
+                // End the write
+                pipeStream.EndWrite(iar);
+                pipeStream.Flush();
+            }
+            catch (Exception oEX)
+            {
+                throw;
             }
         }
     }
